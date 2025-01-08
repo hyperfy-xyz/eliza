@@ -109,7 +109,7 @@ This is the context for the environment and a list of recent events:
 
 Response format should be formatted in a JSON block like this:
 \`\`\`json
-{ "lookAt": "string" player id or null, "emote": "{{emotes}}" or null, "say": "string" or null, "actions": (array of strings) or null }
+{ "lookAt": "string" player id or null, "emote": "{{emotes}}" or null, "say": "string" or null, "trigger": "{{triggers}}" or null }
 \`\`\`
 `;
 
@@ -410,6 +410,10 @@ export class DirectClient {
                 template = template.replace(
                     "{{emotes}}",
                     body.emotes.join("|")
+                );
+                template = template.replace(
+                    "{{triggers}}",
+                    body.triggers.join("|")
                 );
 
                 // console.log("TEMPLATE", template);
