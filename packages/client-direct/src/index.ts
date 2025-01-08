@@ -382,6 +382,45 @@ export class DirectClient {
 
                 console.log("BODY", body);
 
+                if (body.events) {
+                    // Let's remember all events not just speech
+                    // .filter(e => e.type === 'spoke');
+
+                    // loop on the messages and record the memories
+                    // might want to do this in parallel
+                    for (const e of body.events) {
+
+                        // ensure actor is linked to room
+                        const mUserId = stringToUuid(e.playerId);
+                        await runtime.ensureConnection(
+                            mUserId,
+                            roomId, // where
+                            e.playerId, // username
+                            e.playerId, // userScreeName?
+                            "hyperfi"
+                        );
+
+                        // make memory
+                        const content: Content = {
+                            text: e.text || e.type || "",
+                            attachments: [],
+                            source: "hyperfi",
+                            inReplyTo: undefined,
+                        };
+                        const memory: Memory = {
+                            // unique key, added time so we can store when events happen more than once)
+                            id: stringToUuid(e.time + ': ' + e.text || e.type || ""),
+                            agentId: runtime.agentId,
+                            userId: mUserId,
+                            roomId,
+                            content,
+                        };
+
+                        // await to ensure state/context is up to date
+                        await runtime.messageManager.createMemory(memory);
+                    }
+                }
+
                 const content: Content = {
                     // we need to compose who's near and what emotes are available
                     text: JSON.stringify(body),
@@ -426,6 +465,78 @@ export class DirectClient {
                 });
 
                 console.log("RESPONSE", response);
+
+                // do this in the background
+                const rememberThis = new Promise(async (resolve) => {
+                    const contentObj: Content = {
+                        text: response.say as string,
+                    };
+
+                    if (response.lookAt !== null || response.emote !== null) {
+                        contentObj.text += ". Then I ";
+                        if (response.lookAt !== null) {
+                            contentObj.text += "looked at " + response.lookAt;
+                            if (response.emote !== null) {
+                                contentObj.text += " and ";
+                            }
+                        }
+                        if (response.emote !== null) {
+                            contentObj.text = "emoted " + response.emote;
+                        }
+                    }
+
+                    if (response.actions !== null) {
+                        // content can only do one action
+                        contentObj.action = response.actions[0];
+                    }
+
+                    // save response to memory
+                    const responseMessage = {
+                        ...userMessage,
+                        userId: runtime.agentId,
+                        content: contentObj,
+                    };
+
+                    await runtime.messageManager.createMemory(responseMessage); // 18.2ms
+
+                    if (!response) {
+                        res.status(500).send(
+                            "No response from generateMessageResponse"
+                        );
+                        return;
+                    }
+
+                    let message = null as Content | null;
+
+                    const messageId = stringToUuid(Date.now().toString());
+                    const memory: Memory = {
+                        id: messageId,
+                        agentId: runtime.agentId,
+                        userId,
+                        roomId,
+                        content,
+                        createdAt: Date.now(),
+                    };
+
+                    // run evaluators (generally can be done in parallel with processActions)
+                    // can an evaluator modify memory? it could but currently doesn't
+                    await runtime.evaluate(memory, state);
+
+                    // only need to call if responseMessage.content.action is set
+                    if (contentObj.action) {
+                        // pass memory (query) to any actions to call
+                        const _result = await runtime.processActions(
+                            memory,
+                            [responseMessage],
+                            state,
+                            async (newMessages) => {
+                                message = newMessages;
+                                return [memory];
+                            }
+                        );
+                    }
+                    resolve(true);
+                });
 
                 res.json(response);
             }
