@@ -1,13 +1,15 @@
 import bodyParser from "body-parser";
 import cors from "cors";
 import express, { Request as ExpressRequest } from "express";
+import { z } from "zod";
 import multer from "multer";
 import {
     elizaLogger,
     generateCaption,
     generateImage,
     Media,
-    getEmbeddingZeroVector
+    getEmbeddingZeroVector,
+    generateObject,
 } from "@elizaos/core";
 import { composeContext } from "@elizaos/core";
 import { generateMessageResponse } from "@elizaos/core";
@@ -72,6 +74,44 @@ Note that {{agentName}} is capable of reading/seeing/hearing various forms of me
 
 # Instructions: Write the next message for {{agentName}}.
 ` + messageCompletionFooter;
+
+export const hyperfyHandlerTemplate = `{{actionExamples}}
+(Action examples are for reference only. Do not use the information from them in your response.)
+
+# Knowledge
+{{knowledge}}
+
+# About {{agentName}}:
+{{bio}}
+{{lore}}
+
+{{providers}}
+
+{{attachments}}
+
+# Capabilities
+Note that {{agentName}} is capable of reading/seeing/hearing various forms of media, including images, videos, audio, plaintext and PDFs. Recent attachments have been included above under the "Attachments" section.
+
+{{messageDirections}}
+
+{{recentMessages}}
+
+{{actions}}
+
+# Context
+You are currently an embodied avatar in someones Hyperfy virtual world.
+This is the context for the environment and a list of recent events:
+{{hyperfy}}
+
+# Task: Generate a response based on the context above which describes what is happening in the world around you.
+
+# Instructions: Write the next message for {{agentName}}.
+
+Response format should be formatted in a JSON block like this:
+\`\`\`json
+{ "lookAt": "string" player id or null, "emote": "{{emotes}}" or null, "say": "string" or null, "actions": (array of strings) or null }
+\`\`\`
+`;
 
 export class DirectClient {
     public app: express.Application;
@@ -315,6 +355,83 @@ export class DirectClient {
         );
 
         this.app.post(
+            "/:agentId/hyperfy",
+            async (req: express.Request, res: express.Response) => {
+                // get runtime
+                const agentId = req.params.agentId;
+                let runtime = this.agents.get(agentId);
+                // if runtime is null, look for runtime with the same name
+                if (!runtime) {
+                    runtime = Array.from(this.agents.values()).find(
+                        (a) =>
+                            a.character.name.toLowerCase() ===
+                            agentId.toLowerCase()
+                    );
+                }
+                if (!runtime) {
+                    res.status(404).send("Agent not found");
+                    return;
+                }
+
+                const body = req.body;
+
+                // can we be in more than one hyperfy world at once
+                // but you may want the same context is multiple worlds
+                // this is more like an instanceId
+                const roomId = stringToUuid(body.world.id ?? "hyperfy");
+
+                console.log("BODY", body);
+
+                const content: Content = {
+                    // we need to compose who's near and what emotes are available
+                    text: JSON.stringify(body),
+                    attachments: [],
+                    source: "hyperfy",
+                    inReplyTo: undefined,
+                };
+
+                const userId = stringToUuid("hyperfy");
+                const userMessage = {
+                    content,
+                    userId,
+                    roomId,
+                    agentId: runtime.agentId,
+                };
+
+                const state = await runtime.composeState(userMessage, {
+                    agentName: runtime.character.name,
+                });
+
+                let template = hyperfyHandlerTemplate;
+                template = template.replace(
+                    "{{hyperfy}}",
+                    JSON.stringify(body, null, 2)
+                );
+                template = template.replace(
+                    "{{emotes}}",
+                    body.emotes.join("|")
+                );
+
+                // console.log("TEMPLATE", template);
+
+                const context = composeContext({
+                    state,
+                    template,
+                });
+
+                let response = await generateMessageResponse({
+                    runtime: runtime,
+                    context,
+                    modelClass: ModelClass.MEDIUM,
+                });
+
+                console.log("RESPONSE", response);
+
+                res.json(response);
+            }
+        );
+
+        this.app.post(
             "/:agentId/image",
             async (req: express.Request, res: express.Response) => {
                 const agentId = req.params.agentId;
@@ -447,7 +564,9 @@ export class DirectClient {
 
         this.app.post("/:agentId/speak", async (req, res) => {
             const agentId = req.params.agentId;
-            const roomId = stringToUuid(req.body.roomId ?? "default-room-" + agentId);
+            const roomId = stringToUuid(
+                req.body.roomId ?? "default-room-" + agentId
+            );
             const userId = stringToUuid(req.body.userId ?? "user");
             const text = req.body.text;
 
@@ -461,7 +580,8 @@ export class DirectClient {
             // if runtime is null, look for runtime with the same name
             if (!runtime) {
                 runtime = Array.from(this.agents.values()).find(
-                    (a) => a.character.name.toLowerCase() === agentId.toLowerCase()
+                    (a) =>
+                        a.character.name.toLowerCase() === agentId.toLowerCase()
                 );
             }
 
@@ -532,7 +652,9 @@ export class DirectClient {
                 await runtime.messageManager.createMemory(responseMessage);
 
                 if (!response) {
-                    res.status(500).send("No response from generateMessageResponse");
+                    res.status(500).send(
+                        "No response from generateMessageResponse"
+                    );
                     return;
                 }
 
@@ -566,35 +688,51 @@ export class DirectClient {
                     },
                     body: JSON.stringify({
                         text: textToSpeak,
-                        model_id: process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2",
+                        model_id:
+                            process.env.ELEVENLABS_MODEL_ID ||
+                            "eleven_multilingual_v2",
                         voice_settings: {
-                            stability: parseFloat(process.env.ELEVENLABS_VOICE_STABILITY || "0.5"),
-                            similarity_boost: parseFloat(process.env.ELEVENLABS_VOICE_SIMILARITY_BOOST || "0.9"),
-                            style: parseFloat(process.env.ELEVENLABS_VOICE_STYLE || "0.66"),
-                            use_speaker_boost: process.env.ELEVENLABS_VOICE_USE_SPEAKER_BOOST === "true",
+                            stability: parseFloat(
+                                process.env.ELEVENLABS_VOICE_STABILITY || "0.5"
+                            ),
+                            similarity_boost: parseFloat(
+                                process.env.ELEVENLABS_VOICE_SIMILARITY_BOOST ||
+                                    "0.9"
+                            ),
+                            style: parseFloat(
+                                process.env.ELEVENLABS_VOICE_STYLE || "0.66"
+                            ),
+                            use_speaker_boost:
+                                process.env
+                                    .ELEVENLABS_VOICE_USE_SPEAKER_BOOST ===
+                                "true",
                         },
                     }),
                 });
 
                 if (!speechResponse.ok) {
-                    throw new Error(`ElevenLabs API error: ${speechResponse.statusText}`);
+                    throw new Error(
+                        `ElevenLabs API error: ${speechResponse.statusText}`
+                    );
                 }
 
                 const audioBuffer = await speechResponse.arrayBuffer();
 
                 // Set appropriate headers for audio streaming
                 res.set({
-                    'Content-Type': 'audio/mpeg',
-                    'Transfer-Encoding': 'chunked'
+                    "Content-Type": "audio/mpeg",
+                    "Transfer-Encoding": "chunked",
                 });
 
                 res.send(Buffer.from(audioBuffer));
-
             } catch (error) {
-                console.error("Error processing message or generating speech:", error);
+                console.error(
+                    "Error processing message or generating speech:",
+                    error
+                );
                 res.status(500).json({
                     error: "Error processing message or generating speech",
-                    details: error.message
+                    details: error.message,
                 });
             }
         });
