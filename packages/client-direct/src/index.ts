@@ -103,13 +103,13 @@ You are currently an embodied avatar in someones Hyperfy virtual world.
 This is the context for the environment and a list of recent events:
 {{hyperfy}}
 
-# Task: Generate a response based on the context above which describes what is happening in the world around you.
+# Task: Generate a response based on the context above which describes what is happening in the world around you. You can choose to do nothing if nobody is talking to you or you already responded earlier. Keep messages relatively short.
 
 # Instructions: Write the next message for {{agentName}}.
 
 Response format should be formatted in a JSON block like this:
 \`\`\`json
-{ "lookAt": "string" player id or null, "emote": "{{emotes}}" or null, "say": "string" or null, "trigger": "{{triggers}}" or null }
+{ "look": "string" player id or null, "emote": "{{emotes}}" or null, "say": "string" or null, "trigger": "{{triggers}}" or null }
 \`\`\`
 `;
 
@@ -373,12 +373,12 @@ export class DirectClient {
                     return;
                 }
 
-                const body = req.body;
+                const body = req.body || {};
 
                 // can we be in more than one hyperfy world at once
                 // but you may want the same context is multiple worlds
                 // this is more like an instanceId
-                const roomId = stringToUuid(body.world.id ?? "hyperfy");
+                const roomId = stringToUuid(body.world?.id ?? "hyperfy");
 
                 console.log("BODY", body);
 
